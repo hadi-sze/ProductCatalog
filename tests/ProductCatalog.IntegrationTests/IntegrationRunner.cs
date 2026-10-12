@@ -5,6 +5,8 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.DependencyInjection;
 using ProductCatalog.BLL;
 using ProductCatalog.DAL;
@@ -14,6 +16,7 @@ using ProductCatalog.BLL.Services;
 using ProductCatalog.DAL.Data;
 using ProductCatalog.DAL.Exceptions;
 using ProductCatalog.DAL.Repositories;
+using ProductCatalog.DAL.Models;
 
 internal static class IntegrationRunner
 {
@@ -25,6 +28,7 @@ internal static class IntegrationRunner
         Directory.CreateDirectory(directory);
         try
         {
+            await CheckUpgradeAsync(Path.Combine(directory, "upgrade.db"));
             await RunAsync(Path.Combine(directory, "integration.db"));
             Console.WriteLine($"PASS: {checks} integration checks (real SQLite migrations and HTTP pipeline).");
             return 0;
@@ -39,6 +43,23 @@ internal static class IntegrationRunner
             // Only this generated test directory is removed, after the factory closes connections.
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    private static async Task CheckUpgradeAsync(string databasePath)
+    {
+        var options = new DbContextOptionsBuilder<CatalogDbContext>()
+            .UseSqlite($"Data Source={databasePath};Pooling=False").Options;
+        await using var db = new CatalogDbContext(options);
+        await db.GetService<IMigrator>().MigrateAsync(db.Database.GetMigrations().First());
+        var existing = new Product { Name = "Existing product", Sku = "EXISTING", Price = 12.34m, StockQuantity = 2 };
+        db.Products.Add(existing);
+        await db.SaveChangesAsync();
+        await db.Database.MigrateAsync();
+        db.ChangeTracker.Clear();
+        var preserved = await db.Products.SingleAsync();
+        Check(preserved.Id == existing.Id && preserved.Sku == existing.Sku && preserved.Price == existing.Price,
+            "Main company migration preserves existing product data");
+        Check(await db.MainCompanies.CountAsync() == 0, "Main company table is created when upgrading the initial schema");
     }
 
     private static async Task RunAsync(string databasePath)
@@ -138,6 +159,8 @@ internal static class IntegrationRunner
         await Expect(client.GetAsync($"/api/products/{product.Id}"), HttpStatusCode.NotFound, "Deleted product returns 404");
         await Expect(client.DeleteAsync($"/api/products/{product.Id}"), HttpStatusCode.NotFound, "Repeated DELETE returns 404");
 
+        await CheckMainCompaniesAsync(client, factory.Services);
+
         // Simulate an infrastructure failure to verify that SQL details stay out of responses.
         using (var scope = factory.Services.CreateScope())
             await scope.ServiceProvider.GetRequiredService<CatalogDbContext>().Database.ExecuteSqlRawAsync("DROP TABLE Products");
@@ -148,6 +171,90 @@ internal static class IntegrationRunner
             && failureJson.RootElement.GetProperty("detail").GetString() == "The request could not be completed. Try again later."
             && failureJson.RootElement.TryGetProperty("traceId", out _), "500 response has safe ProblemDetails and trace ID");
         factory.Completed = true;
+    }
+
+    private static async Task CheckMainCompaniesAsync(HttpClient client, ServiceProvider services)
+    {
+        const string route = "/api/main-companies";
+        var empty = await client.GetFromJsonAsync<PagedResult<MainCompanyResponse>>(route);
+        Check(empty is { TotalCount: 0 }, "New main company table is empty");
+        var create = await client.PostAsJsonAsync(route, new MainCompanyWriteRequest
+            { Name = "  Main Company  ", UniqCode = " company-001 ", Address = "  12 Main Street  ", IsActive = true });
+        Check(create.StatusCode == HttpStatusCode.Created, "Company POST returns 201");
+        var company = (await create.Content.ReadFromJsonAsync<MainCompanyResponse>())!;
+        Check(company.Id > 0 && company is { Name: "Main Company", UniqCode: "COMPANY-001", Address: "12 Main Street", IsActive: true }, "Company fields are saved and normalized");
+        Check(create.Headers.Location?.AbsolutePath == $"{route}/{company.Id}", "Company Location header references the generated ID");
+        Check(await client.GetFromJsonAsync<MainCompanyResponse>($"{route}/{company.Id}") == company, "Company GET reads persisted data");
+        await Expect(client.PostAsJsonAsync(route, new { uniqCode = "company-001" }), HttpStatusCode.Conflict, "Company uniqCode uniqueness ignores letter casing");
+        await Expect(client.PostAsJsonAsync(route, new { name = new string('N', 201) }), HttpStatusCode.BadRequest, "Company name length is validated");
+        await Expect(client.PostAsJsonAsync(route, new { uniqCode = new string('C', 65) }), HttpStatusCode.BadRequest, "Company uniqCode length is validated");
+        await Expect(client.PostAsJsonAsync(route, new { address = new string('A', 501) }), HttpStatusCode.BadRequest, "Company address length is validated");
+        await Expect(client.PostAsJsonAsync(route, new { isActive = "yes" }), HttpStatusCode.BadRequest, "Company isActive must be a boolean");
+        await Expect(client.GetAsync($"{route}?page=0"), HttpStatusCode.BadRequest, "Company pagination is validated");
+        await Expect(client.GetAsync($"{route}?pageSize=101"), HttpStatusCode.BadRequest, "Company page size is bounded");
+        await Expect(client.GetAsync($"{route}?page=2147483647&pageSize=100"), HttpStatusCode.BadRequest, "Company pagination cannot overflow");
+
+        var optional = await client.PostAsJsonAsync(route, new { });
+        Check(optional.StatusCode == HttpStatusCode.Created, "Company non-ID attributes may be omitted");
+        var second = (await optional.Content.ReadFromJsonAsync<MainCompanyResponse>())!;
+        Check(second.Id != company.Id && second is { Name: null, UniqCode: null, Address: null, IsActive: false }, "Omitted company attributes have explicit defaults");
+        var anotherOptional = await client.PostAsJsonAsync(route, new { uniqCode = " " });
+        Check(anotherOptional.StatusCode == HttpStatusCode.Created, "Multiple companies can have an unspecified uniqCode");
+        var page = await client.GetFromJsonAsync<PagedResult<MainCompanyResponse>>($"{route}?page=2&pageSize=1");
+        Check(page is { TotalCount: 3 } && page.Items.Single().Id == second.Id, "Company pagination uses stable ID ordering");
+
+        var update = await client.PutAsJsonAsync($"{route}/{company.Id}", new MainCompanyWriteRequest
+            { Name = "Updated Main Company", UniqCode = "company-001", Address = "34 Main Street", IsActive = false });
+        Check(update.StatusCode == HttpStatusCode.OK, "Company PUT returns 200");
+        var updated = (await update.Content.ReadFromJsonAsync<MainCompanyResponse>())!;
+        Check(updated.Id == company.Id && updated is { Name: "Updated Main Company", Address: "34 Main Street", IsActive: false }, "Company PUT preserves ID and updates attributes");
+        Check(await client.GetFromJsonAsync<MainCompanyResponse>($"{route}/{company.Id}") == updated, "Company PUT changes persist");
+        await Expect(client.PutAsJsonAsync($"{route}/{second.Id}", new { uniqCode = "COMPANY-001" }), HttpStatusCode.Conflict, "Company duplicate code update returns 409");
+        Check(await client.GetFromJsonAsync<MainCompanyResponse>($"{route}/{second.Id}") == second, "Rejected company update preserves data");
+        await Expect(client.PutAsJsonAsync($"{route}/999999", new { }), HttpStatusCode.NotFound, "Company update handles a missing ID");
+
+        using (var firstScope = services.CreateScope())
+        using (var secondScope = services.CreateScope())
+        {
+            var first = firstScope.ServiceProvider.GetRequiredService<IMainCompanyRepository>();
+            var next = secondScope.ServiceProvider.GetRequiredService<IMainCompanyRepository>();
+            var firstCopy = (await first.GetByIdAsync(company.Id, default))!;
+            var nextCopy = (await next.GetByIdAsync(company.Id, default))!;
+            firstCopy.Address = "New address";
+            await first.UpdateAsync(firstCopy, default);
+            nextCopy.Name = "Concurrent edit";
+            try
+            {
+                await next.UpdateAsync(nextCopy, default);
+                throw new InvalidOperationException("Expected company concurrency conflict.");
+            }
+            catch (PersistenceConflictException) { Check(true, "Company competing writes detect a concurrency conflict"); }
+        }
+        using (var scope = services.CreateScope())
+        {
+            try
+            {
+                await scope.ServiceProvider.GetRequiredService<IMainCompanyService>().CreateAsync(
+                    new MainCompanyWriteRequest { Address = new string('A', 501) }, default);
+                throw new InvalidOperationException("Expected company BLL validation error.");
+            }
+            catch (BusinessValidationException exception)
+            {
+                Check(exception.Errors.ContainsKey("Address"), "Company BLL validates without MVC");
+            }
+        }
+        var concurrent = await Task.WhenAll(
+            client.PostAsJsonAsync(route, new { uniqCode = "COMPANY-RACE" }),
+            client.PostAsJsonAsync(route, new { uniqCode = "company-race" }));
+        Check(concurrent.Count(r => r.StatusCode == HttpStatusCode.Created) == 1
+            && concurrent.Count(r => r.StatusCode == HttpStatusCode.Conflict) == 1, "Company concurrent duplicate creates are protected");
+        await Expect(client.DeleteAsync($"{route}/{company.Id}"), HttpStatusCode.NoContent, "Company DELETE returns 204");
+        await Expect(client.GetAsync($"{route}/{company.Id}"), HttpStatusCode.NotFound, "Deleted company returns 404");
+        await Expect(client.DeleteAsync($"{route}/{company.Id}"), HttpStatusCode.NotFound, "Company repeated DELETE returns 404");
+
+        using var openApi = JsonDocument.Parse(await client.GetStringAsync("/openapi/v1.json"));
+        Check(openApi.RootElement.GetProperty("paths").TryGetProperty(route, out var path)
+            && path.TryGetProperty("get", out _) && path.TryGetProperty("post", out _), "OpenAPI includes company endpoints");
     }
 
     private static CreateProductRequest Write(string name, string sku, decimal price, int stock) =>

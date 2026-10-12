@@ -90,6 +90,24 @@ The collection response contains `items`, `page`, `pageSize`, and `totalCount`. 
 
 ## Validation and persistence
 
+### Main Company
+
+Main Company CRUD is available at `/api/main-companies` (GET/POST) and `/api/main-companies/{id}` (GET/PUT/DELETE), with the same pagination parameters and success status codes as Products. The `AddMainCompanies` Code First migration creates the new table without changing existing product data.
+
+| Attribute | API JSON | Type | Behavior |
+| --- | --- | --- | --- |
+| ID | `id` | integer | Required database primary key, generated on POST; used in the URL for reads, updates, and deletes |
+| Name | `name` | string or null | Optional, maximum 200 characters |
+| uniqCode | `uniqCode` | string or null | Optional, maximum 64 characters; trimmed, normalized to uppercase, unique when supplied |
+| Address | `address` | string or null | Optional, maximum 500 characters |
+| isActive | `isActive` | boolean | Defaults to false when omitted |
+
+POST/PUT bodies contain the four non-ID fields. Responses contain all five attributes; the ID is server-controlled. Strings are trimmed, and empty or whitespace-only strings become null. Multiple companies can omit `uniqCode`; duplicate supplied codes return 409. PUT fully replaces the non-ID fields, so omitted strings become null and omitted `isActive` becomes false. DELETE removes the row; setting `isActive` to false keeps it in the database and in list results.
+
+Main Company has its own DAL entity and repository, BLL DTOs and service, and controller. EF compares the original values of all four non-ID fields on saves/deletes to detect competing writes between a request's read and save; company requests do not require an additional version attribute. Sample requests are in `requests/main-companies.http`.
+
+### Products
+
 - Names are required, limited to 120 characters, and trimmed.
 - SKUs are required, limited to 32 characters, trimmed, converted to uppercase, and restricted to A–Z, digits, and hyphens. The database unique index prevents duplicate SKUs, including concurrent creates.
 - Price and stock quantity must be supplied. Price is 0–1,000,000 with at most two decimal places; stock is a nonnegative 32-bit integer.
@@ -131,11 +149,11 @@ Changing the database provider requires changing its NuGet package, the `UseSqli
 
 ## Error handling
 
-`ApiExceptionHandler` handles business validation (400), missing products (404), uniqueness and concurrency conflicts (409), and unexpected exceptions (500). Validation responses contain an `errors` dictionary. Error responses use ProblemDetails and include a trace ID; unexpected exception details are logged on the server and never returned to clients. DAL write failures are wrapped with their original exception; read failures propagate to the central handler.
+`ApiExceptionHandler` handles business validation (400), missing resources (404), uniqueness and concurrency conflicts (409), and unexpected exceptions (500). Validation responses contain an `errors` dictionary. Error responses use ProblemDetails and include a trace ID; unexpected exception details are logged on the server and never returned to clients. DAL write failures are wrapped with their original exception; read failures propagate to the central handler.
 
 ```json
 {
-  "title": "Product conflict",
+  "title": "Resource conflict",
   "status": 409,
   "detail": "A product with this SKU already exists.",
   "instance": "/api/products",

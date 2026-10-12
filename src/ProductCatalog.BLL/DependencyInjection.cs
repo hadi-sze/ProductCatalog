@@ -8,6 +8,7 @@ public static class DependencyInjection
     public static IServiceCollection AddBusinessLogic(this IServiceCollection services)
     {
         services.AddScoped<IProductService, ProductService>();
+        services.AddScoped<IMainCompanyService, MainCompanyService>();
         return services;
     }
 }

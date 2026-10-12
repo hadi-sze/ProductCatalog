@@ -17,6 +17,48 @@ namespace ProductCatalog.DAL.Migrations
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.12");
 
+            modelBuilder.Entity("ProductCatalog.DAL.Models.MainCompany", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Address")
+                        .IsConcurrencyToken()
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool>("IsActive")
+                        .IsConcurrencyToken()
+                        .HasColumnType("INTEGER");
+
+                    b.Property<string>("Name")
+                        .IsConcurrencyToken()
+                        .HasMaxLength(200)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("UniqCode")
+                        .IsConcurrencyToken()
+                        .HasMaxLength(64)
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UniqCode")
+                        .IsUnique();
+
+                    b.ToTable("MainCompanies", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_MainCompanies_Address", "Address IS NULL OR length(Address) <= 500");
+
+                            t.HasCheckConstraint("CK_MainCompanies_IsActive", "IsActive IN (0, 1)");
+
+                            t.HasCheckConstraint("CK_MainCompanies_Name", "Name IS NULL OR length(Name) <= 200");
+
+                            t.HasCheckConstraint("CK_MainCompanies_UniqCode", "UniqCode IS NULL OR length(UniqCode) BETWEEN 1 AND 64");
+                        });
+                });
+
             modelBuilder.Entity("ProductCatalog.DAL.Models.Product", b =>
                 {
                     b.Property<int>("Id")

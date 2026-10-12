@@ -11,6 +11,7 @@ public static class DependencyInjection
     {
         services.AddDbContext<CatalogDbContext>(options => options.UseSqlite(connectionString));
         services.AddScoped<IProductRepository, ProductRepository>();
+        services.AddScoped<IMainCompanyRepository, MainCompanyRepository>();
         return services;
     }
 }

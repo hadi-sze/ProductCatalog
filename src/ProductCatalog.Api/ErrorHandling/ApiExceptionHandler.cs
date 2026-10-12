@@ -14,8 +14,8 @@ public sealed class ApiExceptionHandler(IProblemDetailsService problemDetailsSer
         var status = exception switch
         {
             BusinessValidationException => StatusCodes.Status400BadRequest,
-            ProductNotFoundException => StatusCodes.Status404NotFound,
-            ProductConflictException or DuplicateSkuException or PersistenceConflictException => StatusCodes.Status409Conflict,
+            ProductNotFoundException or MainCompanyNotFoundException => StatusCodes.Status404NotFound,
+            ProductConflictException or DuplicateSkuException or DuplicateCompanyCodeException or PersistenceConflictException => StatusCodes.Status409Conflict,
             _ => StatusCodes.Status500InternalServerError
         };
         if (status == 500) logger.LogError(exception, "Unhandled error for {Method} {Path}", context.Request.Method, context.Request.Path);
@@ -28,8 +28,8 @@ public sealed class ApiExceptionHandler(IProblemDetailsService problemDetailsSer
         problem.Title = status switch
         {
             400 => "Validation failed",
-            404 => "Product not found",
-            409 => "Product conflict",
+            404 => "Resource not found",
+            409 => "Resource conflict",
             _ => "An unexpected error occurred"
         };
         problem.Detail = status == 500 ? "The request could not be completed. Try again later." : exception.Message;
