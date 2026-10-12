@@ -1,0 +1,41 @@
+@baseUrl = http://localhost:5080
+@productId = 1
+# Replace with the version returned by the latest GET, POST, or PUT.
+@version = 00000000-0000-0000-0000-000000000000
+
+### Create
+POST {{baseUrl}}/api/products
+Content-Type: application/json
+
+{
+  "name": "Keyboard",
+  "sku": "KB-001",
+  "price": 49.95,
+  "stockQuantity": 10
+}
+
+### Read a page
+GET {{baseUrl}}/api/products?page=1&pageSize=20
+Accept: application/json
+
+### Read a product
+GET {{baseUrl}}/api/products/{{productId}}
+Accept: application/json
+
+### Update (copy the current version into @version first)
+PUT {{baseUrl}}/api/products/{{productId}}
+Content-Type: application/json
+
+{
+  "name": "Mechanical Keyboard",
+  "sku": "KB-001",
+  "price": 69.90,
+  "stockQuantity": 8,
+  "version": "{{version}}"
+}
+
+### Delete
+DELETE {{baseUrl}}/api/products/{{productId}}
+
+### Development OpenAPI document
+GET {{baseUrl}}/openapi/v1.json

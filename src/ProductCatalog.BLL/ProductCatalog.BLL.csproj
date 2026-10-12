@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../ProductCatalog.DAL/ProductCatalog.DAL.csproj" />
+  </ItemGroup>
+</Project>
